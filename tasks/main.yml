@@ -1,0 +1,65 @@
+---
+- name: Include OS-specific variables for the krb server
+  #include_vars: "{{ ansible_os_family }}.yml"
+  include_vars: "RedHat.yml"
+
+- name: Ensure server record keeping directories exists
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0700
+  with_items:
+    - "{{ krb_server_dir_data }}/records/principals"
+    - "{{ krb_server_dir_data }}/records/keys"
+  delegate_to: "{{ krb_server }}"
+
+- name: Ensure client record keeping directory exists
+  file:
+    path: "/etc/krbclient/"
+    state: directory
+    owner: root
+    group: root
+    mode: 0700
+
+- name: Check if the service principal has been created
+  stat:
+    path: "{{ krb_server_dir_data }}/records/principals/{{ item }}:{{ ansible_fqdn }}"
+  delegate_to: "{{ krb_server }}"
+  with_items: "{{ krb_services_to_add }}"
+  register: krb_princ_add
+
+- name: Create the service principal for this host
+  command: kadmin -p {{ krb_admin_user }}/admin -w "{{ krb_admin_pass }}" -q "add_principal -randkey {{ item.item }}/{{ ansible_fqdn }}"
+  delegate_to: "{{ krb_server }}"
+  when: item.stat.exists == False
+  with_items: "{{ krb_princ_add.results }}"
+
+- name: Create record of service principal creation
+  file:
+    path: "{{ krb_server_dir_data }}/records/principals/{{ item.item }}:{{ ansible_fqdn }}"
+    state: touch
+  delegate_to: "{{ krb_server }}"
+  when: item.stat.exists == False
+  with_items: "{{ krb_princ_add.results }}"
+
+
+- name: Check if the service principal key has been added to the keytab
+  stat:
+    path: "/etc/krbclient/in_keytab_-_{{ item }}:{{ ansible_fqdn }}"
+  register: krb_keytab_add
+  with_items: "{{ krb_services_to_add }}"
+
+
+- name: Add the service principal key to the keytab
+  command: kadmin -p {{ krb_admin_user }}/admin -w "{{ krb_admin_pass }}" -q "ktadd -k /etc/krb5.keytab {{ item.item }}/{{ ansible_fqdn }}"
+  when: item.stat.exists == False
+  with_items: "{{ krb_keytab_add.results }}"
+
+- name: Create a file to let us know the service principal key has been added
+  file:
+    path: "/etc/krbclient/in_keytab_-_{{ item.item }}:{{ ansible_fqdn }}"
+    state: touch
+  when: item.stat.exists == False
+  with_items: "{{ krb_keytab_add.results }}"
